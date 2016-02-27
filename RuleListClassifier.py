@@ -61,7 +61,79 @@ class RuleListClassifier(BaseEstimator):
         self.discretizer = None
         self.d_star = None
         
+    
+    def fit2(self, X, y, feature_labels=None, **kwargs):
+        X, y = check_X_y(X, y, ensure_min_samples=2, estimator=self)
+        if feature_labels == None:
+            feature_labels = ["ft"+str(i+1) for i in range(len(X[0]))]
+        self.feature_labels = feature_labels
         
+        #We will store here the MCMC results
+        permsdic = defaultdict(default_permsdic) 
+        data = list(X[:])
+        itemsets = [r[0] for r in fpgrowth(data, supp=self.minsupport, zmax=self.maxcardinality)]
+        itemsets = list(set(itemsets))
+        print len(itemsets),'rules mined'
+        
+        X = [set(range(len(data)))]
+        for item in itemsets:
+            X.append(set([i for (i,xi) in enumerate(data) if set(item).issubset(xi)]))
+        
+        #now form lhs_len
+        lhs_len = [0]
+        for lhs in itemsets:
+            lhs_len.append(len(lhs))
+        nruleslen = Counter(lhs_len)
+        lhs_len = array(lhs_len)
+        itemsets_all = ['null']
+        itemsets_all.extend(itemsets)
+        
+        
+        Xtrain, Ytrain = X, np.vstack((y, 1-y)).T.astype(int)
+        self.itemsets = itemsets_all
+        
+        #Do MCMC
+        res, Rhat = run_bdl_multichain_serial(self.max_iter,
+                                              self.thinning,
+                                              self.alpha,
+                                              self.listlengthprior,
+                                              self.listwidthprior,
+                                              Xtrain,Ytrain,
+                                              nruleslen,
+                                              lhs_len,
+                                              self.maxcardinality,
+                                              permsdic,
+                                              self.burnin,
+                                              self.n_chains,
+                                              [None]*self.n_chains, 
+                                              verbose=self.verbose)
+            
+        #Merge the chains
+        permsdic = merge_chains(res)
+        
+        ###The point estimate, BRL-point
+        self.d_star = get_point_estimate(permsdic,
+                                         lhs_len,
+                                         Xtrain,
+                                         Ytrain,
+                                         self.alpha,
+                                         nruleslen,
+                                         self.maxcardinality,
+                                         self.listlengthprior,
+                                         self.listwidthprior, 
+                                         verbose=self.verbose)
+        
+        if self.d_star:
+            #Compute the rule consequent
+            self.theta, self.ci_theta = get_rule_rhs(Xtrain,
+                                                     Ytrain,
+                                                     self.d_star,
+                                                     self.alpha,
+                                                     True)
+            
+        return self
+        
+    
     def fit(self, X, y, feature_labels = None): # -1 for unlabeled
         """Fit rule lists to data
 
